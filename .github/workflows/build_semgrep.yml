@@ -126,28 +126,147 @@ jobs:
         cd build
         ctest -C Release --output-on-failure
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
-    
-    - name: Clone script repository
+    - name: Collect all dependencies
       run: |
-        git clone https://github.com/nitinNayar/conanfile_generator.git conanfile_generator
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        cd conanfile_generator
-        pip install -r requirements.txt
-    
-    - name: Generate Conanfile
-      run: |
-        cd conanfile_generator
-        python generate_conanfile.py $(pwd)/.. --output $(pwd)/../conanfile.txt
-    
-    - name: Upload Generated Conanfile
+        echo "# Dependency Report" > dependency_report.md
+        echo "Generated on $(date)" >> dependency_report.md
+        echo "" >> dependency_report.md
+        
+        # Create directory to store detailed dependency information
+        mkdir -p dependency_info
+        
+        echo "## System Dependencies" >> dependency_report.md
+        echo "Listing installed apt packages:" >> dependency_report.md
+        echo '```' >> dependency_report.md
+        dpkg-query -W -f='${binary:Package} ${Version}\n' | sort >> dependency_report.md
+        echo '```' >> dependency_report.md
+        
+        echo "" >> dependency_report.md
+        echo "## CMake Dependencies" >> dependency_report.md
+        if [ -f "CMakeLists.txt" ]; then
+          echo "### Direct CMake Dependencies" >> dependency_report.md
+          echo '```' >> dependency_report.md
+          # Extract and document all find_package and pkg_check_modules calls more thoroughly
+          {
+            grep -rn --include="CMakeLists.txt" --include="*.cmake" "find_package" . | sed 's/://g' || echo "No find_package found"
+            grep -rn --include="CMakeLists.txt" --include="*.cmake" "pkg_check_modules" . | sed 's/://g' || echo "No pkg_check_modules found"
+          } >> dependency_report.md
+          echo '```' >> dependency_report.md
+          
+          # Try to get actual versions from CMake cache if build has run
+          if [ -f "build/CMakeCache.txt" ]; then
+            echo "" >> dependency_report.md
+            echo "### CMake Cache - Dependency Versions" >> dependency_report.md
+            echo '```' >> dependency_report.md
+            grep -E "_VERSION|_FOUND" build/CMakeCache.txt | sort >> dependency_report.md
+            echo '```' >> dependency_report.md
+            
+            # Save detailed cmake info
+            cp build/CMakeCache.txt dependency_info/
+            [ -f build/compile_commands.json ] && cp build/compile_commands.json dependency_info/
+          fi
+        fi
+        
+        # Conan dependencies
+        if [ -f "conanfile.txt" ] || [ -f "conanfile.py" ]; then
+          echo "" >> dependency_report.md
+          echo "## Conan Dependencies" >> dependency_report.md
+          
+          echo "### Conan Direct Dependencies" >> dependency_report.md
+          echo '```' >> dependency_report.md
+          if [ -f "conanfile.txt" ]; then
+            cat conanfile.txt >> dependency_report.md
+          else
+            cat conanfile.py >> dependency_report.md
+          fi
+          echo '```' >> dependency_report.md
+          
+          echo "" >> dependency_report.md
+          echo "### Conan Dependency Graph" >> dependency_report.md
+          echo '```' >> dependency_report.md
+          cd build && conan info .. >> dependency_report.md || echo "Could not generate Conan info" >> dependency_report.md
+          echo '```' >> dependency_report.md
+          
+          # Get Conan lock file if available
+          [ -f "build/conanbuildinfo.txt" ] && cp build/conanbuildinfo.txt dependency_info/
+          [ -f "build/conaninfo.txt" ] && cp build/conaninfo.txt dependency_info/
+        fi
+        
+        # vcpkg dependencies
+        if [ -f "vcpkg.json" ]; then
+          echo "" >> dependency_report.md
+          echo "## vcpkg Dependencies" >> dependency_report.md
+          echo "### vcpkg Direct Dependencies" >> dependency_report.md
+          echo '```json' >> dependency_report.md
+          cat vcpkg.json >> dependency_report.md
+          echo '```' >> dependency_report.md
+          
+          # If using vcpkg with CMake, try to extract more info
+          if [ -d "build/vcpkg_installed" ]; then
+            echo "" >> dependency_report.md
+            echo "### Installed vcpkg Packages" >> dependency_report.md
+            echo '```' >> dependency_report.md
+            find build/vcpkg_installed -name "CONTROL" -o -name "vcpkg_abi_info.txt" | xargs cat 2>/dev/null >> dependency_report.md || echo "No detailed vcpkg info found" >> dependency_report.md
+            echo '```' >> dependency_report.md
+          fi
+        fi
+        
+        # Look for package.json (Node.js dependencies)
+        if [ -f "package.json" ]; then
+          echo "" >> dependency_report.md
+          echo "## Node.js Dependencies" >> dependency_report.md
+          echo '```json' >> dependency_report.md
+          cat package.json >> dependency_report.md
+          echo '```' >> dependency_report.md
+          
+          if [ -f "package-lock.json" ]; then
+            cp package-lock.json dependency_info/
+          fi
+        fi
+        
+        # Look for requirements.txt (Python dependencies)
+        if [ -f "requirements.txt" ]; then
+          echo "" >> dependency_report.md
+          echo "## Python Dependencies" >> dependency_report.md
+          echo "### Direct Dependencies (requirements.txt)" >> dependency_report.md
+          echo '```' >> dependency_report.md
+          cat requirements.txt >> dependency_report.md
+          echo '```' >> dependency_report.md
+          
+          # Try to generate pip freeze output if Python is used
+          echo "" >> dependency_report.md
+          echo "### Complete Python Environment" >> dependency_report.md
+          echo '```' >> dependency_report.md
+          pip freeze >> dependency_report.md 2>/dev/null || echo "Could not generate pip freeze output" >> dependency_report.md
+          echo '```' >> dependency_report.md
+        fi
+        
+        # Look for typical C/C++ dependency patterns in source code
+        echo "" >> dependency_report.md
+        echo "## Source Code Analysis" >> dependency_report.md
+        echo "### Include Statements" >> dependency_report.md
+        echo '```' >> dependency_report.md
+        find . -type f -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" | xargs grep -l "#include" | head -n 50 | xargs grep "#include" | sort | uniq -c | sort -nr >> dependency_report.md 2>/dev/null || echo "No C/C++ includes found" >> dependency_report.md
+        echo '```' >> dependency_report.md
+        
+        # Look at shared library dependencies in compiled binaries
+        echo "" >> dependency_report.md
+        echo "## Binary Analysis" >> dependency_report.md
+        echo "### Shared Library Dependencies" >> dependency_report.md
+        echo '```' >> dependency_report.md
+        find build -type f -executable -not -path "*/CMakeFiles/*" | head -n 20 | xargs -I{} bash -c "echo 'File: {}'; ldd {} 2>/dev/null || echo 'Not a dynamic executable'" >> dependency_report.md 2>/dev/null || echo "No binaries found or ldd not available" >> dependency_report.md
+        echo '```' >> dependency_report.md
+        
+        # Create a compressed archive of all dependency information
+        tar -czf dependency_info.tar.gz dependency_info dependency_report.md
+        
+        echo "Dependency report generated at dependency_report.md"
+        
+    - name: Upload dependency report
       uses: actions/upload-artifact@v4
       with:
-        name: conanfile
-        path: conanfile.txt
+        name: dependency-report
+        path: |
+          dependency_report.md
+          dependency_info.tar.gz
+
