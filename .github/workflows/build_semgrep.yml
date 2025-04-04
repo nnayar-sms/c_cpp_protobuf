@@ -1,0 +1,134 @@
+name: C/C++ Build (Ubuntu)
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Ubuntu Build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+
+    - name: Install basic build tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake ninja-build pkg-config
+
+    - name: Auto-detect and install dependencies
+      run: |
+        # If a dependencies.txt file exists, use it to install dependencies
+        if [ -f "dependencies.txt" ]; then
+          sudo apt-get install -y $(cat dependencies.txt)
+        fi
+        
+        # If there's a CMake file, extract and install dependencies
+        if [ -f "CMakeLists.txt" ]; then
+          # Extract package dependencies from CMake files
+          CMAKE_DEPS=$(grep -E "find_package|pkg_check_modules" CMakeLists.txt | grep -oE '[A-Za-z0-9_-]+' | sort | uniq)
+          if [ ! -z "$CMAKE_DEPS" ]; then
+            echo "Detected CMake dependencies: $CMAKE_DEPS"
+            # Try to install common mappings from CMake module names to apt package names
+            for DEP in $CMAKE_DEPS; do
+              case $DEP in
+                Boost)
+                  sudo apt-get install -y libboost-all-dev
+                  ;;
+                ZLIB)
+                  sudo apt-get install -y zlib1g-dev
+                  ;;
+                OpenSSL)
+                  sudo apt-get install -y libssl-dev
+                  ;;
+                Threads)
+                  # Usually built-in
+                  ;;
+                Qt5|Qt6)
+                  sudo apt-get install -y qtbase5-dev
+                  ;;
+                CURL)
+                  sudo apt-get install -y libcurl4-openssl-dev
+                  ;;
+                *)
+                  # Try to guess package name (lowercase with lib prefix and -dev suffix)
+                  GUESS_PKG="lib$(echo $DEP | tr '[:upper:]' '[:lower:]')-dev"
+                  echo "Trying to install: $GUESS_PKG"
+                  sudo apt-get install -y $GUESS_PKG || true
+                  ;;
+              esac
+            done
+          fi
+        fi
+        
+        # If configure script exists, check for dependencies
+        if [ -f "configure" ]; then
+          # Run configure with --help to extract dependencies
+          CONFIGURE_DEPS=$(./configure --help | grep -E 'with-[a-z0-9_-]+' | grep -oE 'with-[a-z0-9_-]+' | sed 's/with-//g')
+          if [ ! -z "$CONFIGURE_DEPS" ]; then
+            echo "Detected configure dependencies: $CONFIGURE_DEPS"
+            # Try to install based on common naming patterns
+            for DEP in $CONFIGURE_DEPS; do
+              GUESS_PKG="lib$(echo $DEP | tr '[:upper:]' '[:lower:]')-dev"
+              echo "Trying to install: $GUESS_PKG"
+              sudo apt-get install -y $GUESS_PKG || true
+            done
+          fi
+        fi
+        
+        # If vcpkg.json exists, extract dependencies
+        if [ -f "vcpkg.json" ]; then
+          VCPKG_DEPS=$(grep -Eo '"dependencies"[^]]*]' vcpkg.json | grep -Eo '"[^"]*"' | sed 's/"//g' | grep -v dependencies)
+          if [ ! -z "$VCPKG_DEPS" ]; then
+            echo "Detected vcpkg dependencies: $VCPKG_DEPS"
+            # Try to map vcpkg package names to apt packages
+            for DEP in $VCPKG_DEPS; do
+              GUESS_PKG="lib$(echo $DEP | tr '[:upper:]' '[:lower:]')-dev"
+              echo "Trying to install: $GUESS_PKG"
+              sudo apt-get install -y $GUESS_PKG || true
+            done
+          fi
+        fi
+        
+        # If conanfile.txt or conanfile.py exists, use Conan to handle dependencies
+        if [ -f "conanfile.txt" ] || [ -f "conanfile.py" ]; then
+          echo "Conan package manager detected, installing Conan..."
+          pip install conan
+          # Conan will handle the dependencies during the build step
+        fi
+
+    - name: Configure CMake
+      run: |
+        mkdir -p build
+        cd build
+        
+        # If using Conan, install dependencies first
+        if [ -f "../conanfile.txt" ] || [ -f "../conanfile.py" ]; then
+          conan install .. --build=missing
+        fi
+        
+        cmake .. -DCMAKE_BUILD_TYPE=Release -G Ninja
+
+    - name: Build
+      run: |
+        cd build
+        cmake --build . --config Release
+
+    - name: Run tests
+      run: |
+        cd build
+        ctest -C Release --output-on-failure
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: ubuntu-binaries
+        path: build/bin/
+        if-no-files-found: ignore
