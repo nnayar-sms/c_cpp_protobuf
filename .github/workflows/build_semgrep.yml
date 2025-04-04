@@ -125,10 +125,3 @@ jobs:
       run: |
         cd build
         ctest -C Release --output-on-failure
-
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: ubuntu-binaries
-        path: build/bin/
-        if-no-files-found: ignore
