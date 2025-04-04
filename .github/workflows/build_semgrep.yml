@@ -125,3 +125,29 @@ jobs:
       run: |
         cd build
         ctest -C Release --output-on-failure
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Clone script repository
+      run: |
+        git clone https://github.com/nitinNayar/conanfile_generator.git conanfile_generator
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        cd conanfile_generator
+        pip install -r requirements.txt
+    
+    - name: Generate Conanfile
+      run: |
+        cd conanfile_generator
+        python generate_conanfile.py $(pwd)/.. --output $(pwd)/../conanfile.txt
+    
+    - name: Upload Generated Conanfile
+      uses: actions/upload-artifact@v3
+      with:
+        name: conanfile
+        path: conanfile.txt
